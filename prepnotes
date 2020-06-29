@@ -1,0 +1,68 @@
+for node in $(oc get nodes | grep worker| awk {'print $1'}); do echo $node; ssh core@$node 'ulimit -n'; done
+sudo semanage fcontext -a -s system_u -t etc_t "/etc/sysctl.d/42-cp4d.conf
+ sudo restorecon -F /etc/sysctl.d/42-cp4d.conf
+
+journalctl -lu atomic-openshift-node | grep -i notready 
+journalctl --since "36 hours ago" | grep -i notready
+
+
+
+apiVersion: machineconfiguration.openshift.io/v1
+kind: MachineConfig
+metadata:
+  generation: 1
+  labels:
+    machineconfiguration.openshift.io/role: worker
+  name: 50-worker-cp4d-sysctl
+  resourceVersion: "926196"
+  selfLink: /apis/machineconfiguration.openshift.io/v1/machineconfigs/50-worker-cp4d-sysctl
+spec:
+  config:
+    ignition:
+      version: 2.2.0
+    storage:
+      files:
+      - contents:
+          source: data:,vm.max_map_count%20%3D%20262144%0Akernel.msgmax%20%3D%2065536%0Akernel.msgmnb%20%3D%2065536%0Akernel.msgmni%20%3D%2032768%0Akernel.shmmax%20%3D%2021474836480%0Akernel.shmall%20%3D%2010485760%0Akernel.shmmni%20%3D%205120%0Akernel.sem%20%3D%20250%201024000%20100%2016384%0A
+        filesystem: root
+        mode: 420
+        path: /etc/sysctl.d/50-worker-cp4d-sysctl.conf
+
+
+
+oc create -f mc1 
+
+oc get mc ( Machine Config)
+oc get nodes
+oc get mcp (Machine config pool)
+
+oc get mc -o name --sort-by=.metadata.creationTimestamp | grep rendered-worker | tail -n1
+
+python3 -c "import sys, urllib.parse; print(urllib.parse.unquote(sys.argv[1]))" $(oc get $(oc get mc -o name --sort-by=.metadata.creationTimestamp | grep rendered-worker| tail -n1 ) -o jsonpath='{.spec.config.storage.files[?(@.path=="/etc/crio/crio.conf")].contents.source}' | awk -F" " '{print $1}' | sed 's/data:,//g')  > /tmp/crio.conf
+sed -i 's/pids_limit.*/pids_limit = 12290\ndefault_ulimits = [\n\ \ \ \ "nofile=66560:66560",\n]/g' /tmp/crio.conf
+crio_conf=$(cat /tmp/crio.conf | python3 -c "import sys, urllib.parse; print(urllib.parse.quote(''.join(sys.stdin.readlines())))")
+
+
+cat << EOF > /tmp/51-worker-cp4d-crio-conf.yaml
+apiVersion: machineconfiguration.openshift.io/v1
+kind: MachineConfig
+metadata:
+ labels:
+   machineconfiguration.openshift.io/role: worker
+ name: 51-worker-cp4d-crio-conf
+spec:
+ config:
+   ignition:
+     version: 2.2.0
+   storage:
+     files:
+     - contents:
+         source: data:,${crio_conf}
+       filesystem: root
+       mode: 0644
+       path: /etc/crio/crio.conf
+EOF
+
+oc create -f /tmp/51-worker-cp4d-crio-conf.yaml
+
+https://github.ibm.com/PrivateCloud-analytics/Zen/issues/15790
